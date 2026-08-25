@@ -18,7 +18,7 @@ attached PSX storage device.
 
 Use `[ L1 ]` for PSX1 or `[ R1 ]` for PSX2 on the revision selection screen.
 
-The ELF must be launched with `wLaunchELF v4.70_R3Z`. Standard wLaunchELF
+The ELF must be launched with `wLaunchELF v4.76_R3Z`. Standard wLaunchELF
 builds do not provide the required DVR and XFROM support.
 
 ## Build
