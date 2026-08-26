@@ -2,10 +2,34 @@
 
 RepairBox.pl PSX HDD Setup prepares replacement storage for Sony PSX DESR
 consoles. It supports both PSX hardware revisions from one ELF and is designed
-primarily for the RepairBox FC1307A IDE-to-SATA adapter.
+primarily for the RepairBox FC1307A IDE-to-SD adapter.
 
 The application is destructive: selecting a revision erases and rebuilds the
 attached PSX storage device.
+
+## Video guide
+
+A complete video showing the PSX2 update and the current HDD Setup workflow is
+available on YouTube:
+
+[![Watch the RepairBox PSX HDD Setup video](https://img.youtube.com/vi/gVhUV-QnHn4/maxresdefault.jpg)](https://youtu.be/gVhUV-QnHn4)
+
+[Watch the RepairBox PSX HDD Setup video on YouTube](https://youtu.be/gVhUV-QnHn4)
+
+The video demonstrates the project in practice, including storage preparation
+and the differences between the PSX1 and PSX2 installation paths.
+
+## Revision selection
+
+The same ELF supports both Sony PSX hardware revisions.
+
+![RepairBox.pl PSX HDD Setup revision selection screen](docs/images/setup/revision-selection.png)
+
+Select the revision that matches the model number on the rear label of the
+console:
+
+- `[ L1 ]` — PSX1
+- `[ R1 ]` — PSX2
 
 ## Supported hardware
 
@@ -15,8 +39,6 @@ attached PSX storage device.
 - PSX2 media verified: 256 GB, 512 GB and 1 TB.
 - 32 GB media is not supported.
 - PSX2 media smaller than 256 GB is not supported.
-
-Use `[ L1 ]` for PSX1 or `[ R1 ]` for PSX2 on the revision selection screen.
 
 The ELF must be launched with `wLaunchELF v4.76_R3Z`. Standard wLaunchELF
 builds do not provide the required DVR and XFROM support.
