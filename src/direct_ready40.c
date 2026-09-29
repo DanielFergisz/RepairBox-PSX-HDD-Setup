@@ -238,10 +238,20 @@ void dr40_scan_preflight(dr40_result_t *result,
         (u32)result->before.hdd_totalsector == DR40_VISIBLE_SECTORS &&
         (u32)result->before.dvr_totalsector == DR40_VISIBLE_SECTORS;
     bootflag_ro_inspect(&result->bootflag);
+    result->bootflag_accessible =
+        result->bootflag.open_result >= 0 &&
+        result->bootflag.final_read_result >= 0 &&
+        result->bootflag.close_result >= 0;
     result->bootflag_normal =
         result->bootflag.state == BOOTFLAG_RO_NORMAL;
-    if (!result->stack_ready || !result->hardware_profile_valid ||
-        !result->bootflag_normal) {
+    installer_release(&result->installer);
+    installer_initialize(&result->installer, diagnostics);
+    bootstrap_initialize(&result->bootstrap);
+    installer_scan_source(&result->installer);
+    result->source_ready = result->installer.source_scan_valid;
+    bootstrap_validate_usb(&result->bootstrap);
+    result->bootstrap_ready = result->bootstrap.validation_valid;
+    if (!result->stack_ready || !result->hardware_profile_valid) {
         result->mode = DR40_MODE_STOP;
         result->preflight_valid = 0;
         return;
@@ -252,13 +262,6 @@ void dr40_scan_preflight(dr40_result_t *result,
         return;
     }
     result->mode = DR40_MODE_INITIALIZE;
-    installer_release(&result->installer);
-    installer_initialize(&result->installer, diagnostics);
-    bootstrap_initialize(&result->bootstrap);
-    installer_scan_source(&result->installer);
-    result->source_ready = result->installer.source_scan_valid;
-    bootstrap_validate_usb(&result->bootstrap);
-    result->bootstrap_ready = result->bootstrap.validation_valid;
     if (result->installer.source_root_open_result >= 0) {
         result->usb_ready = 1;
         if (!result->usb_wait_attempted) {
@@ -696,6 +699,10 @@ void dr40_execute(dr40_result_t *result,
     if (!validate_xcontents_directories())
         result->final_pfs_valid = 0;
     bootflag_ro_inspect(&result->bootflag);
+    result->bootflag_accessible =
+        result->bootflag.open_result >= 0 &&
+        result->bootflag.final_read_result >= 0 &&
+        result->bootflag.close_result >= 0;
     result->bootflag_normal =
         result->bootflag.state == BOOTFLAG_RO_NORMAL;
     result->final_bootstrap_valid = result->bootstrap.bootstrap_valid;
@@ -709,8 +716,7 @@ void dr40_execute(dr40_result_t *result,
         (u32)result->after.getmaxlba48 == DR40_NATIVE_MAX &&
         result->after.islba48 == 1 && result->system_layout_valid &&
         result->dvr_layout_valid && result->final_pfs_valid &&
-        result->all_package_files_valid &&
-        result->final_bootstrap_valid && result->bootflag_normal;
+        result->all_package_files_valid && result->final_bootstrap_valid;
     emit(progress, stage, "FINAL VALIDATION",
          result->direct_ready40_storage_valid ? DR40_PROGRESS_COMPLETE
                                               : DR40_PROGRESS_FAILED,

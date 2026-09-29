@@ -1,4 +1,6 @@
 #include <errno.h>
+#include <delaythread.h>
+#include <kernel.h>
 #include <malloc.h>
 #include <stdio.h>
 #include <string.h>
@@ -10,10 +12,13 @@
 #include <iox_stat.h>
 
 #include "installer.h"
+#include "build_profile.h"
 #include "sha256.h"
 #include "ui.h"
 
 #define COPY_BUFFER_SIZE (64u * 1024u)
+#define FILE_IO_MAX_ATTEMPTS 2u
+#define FILE_IO_RETRY_DELAY_US 250000u
 #define PROGRESS_REFRESH_MS 500u
 #define PROGRESS_LINE_WIDTH 54
 typedef struct child_name {
@@ -85,6 +90,8 @@ static void initialize_for_revision(
     result->source_root_open_result = -1;
     result->source_root_final_read_result = -1;
     result->source_root_close_result = -1;
+    result->failure_offset = 0;
+    result->failure_attempt = 0;
     result->all_unmounted_cleanly = 1;
     for (index = 0; index < partition_count; ++index) {
         installer_partition_result_t *partition = &result->partitions[index];
@@ -365,6 +372,9 @@ static int scan_directory(installer_result_t *result, unsigned int index,
         }
     }
 
+    if (source_media_dread_is_eof(read_result))
+        read_result = 0;
+
     if (is_root)
         partition->source_final_read_result = read_result;
     close_result = fileXioDclose(directory_fd);
@@ -443,6 +453,8 @@ void installer_scan_source(installer_result_t *result)
         ++result->partitions[partition_index].source_directories;
         ++result->source_directory_count;
     }
+    if (source_media_dread_is_eof(read_result))
+        read_result = 0;
     result->source_root_final_read_result = read_result;
     close_result = fileXioDclose(root_fd);
     result->source_root_close_result = close_result;
@@ -565,7 +577,7 @@ static void show_progress(installer_result_t *result,
 
     if (!progress_screen_ready) {
         ui_begin();
-        ui_printf("RepairBox.pl PSX HDD Setup v1.0\n");
+        ui_printf(RBX_PROGRAM_TITLE "\n");
         ui_inverse_status("INSTALLING SYSTEM");
         ui_inverse_status("DO NOT POWER OFF");
         progress_screen_ready = 1;
@@ -576,8 +588,9 @@ static void show_progress(installer_result_t *result,
     progress_line(72, step_line);
     snprintf(line, sizeof(line), "INSTALLING  %s", partition->name);
     progress_line(96, line);
-    snprintf(line, sizeof(line), "File %u / %u   Name: %s",
+    snprintf(line, sizeof(line), "File %u/%u Try %u/%u  Name: %s",
              result->current_file_index, result->source_file_count,
+             result->current_file_attempt, FILE_IO_MAX_ATTEMPTS,
              progress_filename(relative_path));
     progress_line(120, line);
     format_file_size(size_text, sizeof(size_text), result->current_file_size);
@@ -596,13 +609,17 @@ static int hash_open_file(const char *path, u64 *size,
                            unsigned char digest[SHA256_DIGEST_SIZE],
                            installer_result_t *result,
                            installer_partition_result_t *partition,
-                           const installer_source_item_t *item)
+                           const installer_source_item_t *item,
+                           u64 *failure_offset,
+                           const char **failure_operation)
 {
     sha256_context_t hash;
-    int fd = fileXioOpen(path, FIO_O_RDONLY, 0);
+    int fd;
     u64 next_update = 0;
     u64 verify_start = GetTimerSystemTime();
 
+    *failure_operation = "destination_verify_open";
+    fd = fileXioOpen(path, FIO_O_RDONLY, 0);
     if (fd < 0)
         return fd;
     *size = 0;
@@ -612,12 +629,14 @@ static int hash_open_file(const char *path, u64 *size,
 
         if (read_result < 0) {
             fileXioClose(fd);
+            *failure_operation = "destination_verify_read";
             return read_result;
         }
         if (read_result == 0)
             break;
         sha256_update(&hash, copy_buffer, (size_t)read_result);
         *size += (u64)read_result;
+        *failure_offset = *size;
         result->current_file_bytes_processed = *size;
         if (*size >= next_update) {
             show_progress(result, partition, item->relative_path,
@@ -627,8 +646,10 @@ static int hash_open_file(const char *path, u64 *size,
     }
     {
         int close_result = fileXioClose(fd);
-        if (close_result < 0)
+        if (close_result < 0) {
+            *failure_operation = "destination_verify_close";
             return close_result;
+        }
     }
     sha256_final(&hash, digest);
     {
@@ -671,9 +692,11 @@ static int ensure_destination_directory(installer_result_t *result,
     return 0;
 }
 
-static int copy_file(installer_result_t *result,
-                     installer_partition_result_t *partition,
-                     const installer_source_item_t *item)
+static int copy_file_once(installer_result_t *result,
+                          installer_partition_result_t *partition,
+                          const installer_source_item_t *item,
+                          u64 *failure_offset,
+                          const char **failure_operation)
 {
     char source[INSTALLER_PATH_SIZE];
     char destination[INSTALLER_PATH_SIZE];
@@ -687,24 +710,27 @@ static int copy_file(installer_result_t *result,
     int return_value;
     u64 next_update = 0;
 
+    *failure_offset = 0;
+    *failure_operation = "source_path";
     return_value = make_usb_path(result, source, partition->name,
                                  item->relative_path);
     if (return_value < 0)
         goto failed;
+    *failure_operation = "destination_path";
     return_value = make_destination_path(destination, partition,
                                          item->relative_path);
     if (return_value < 0)
         goto failed;
 
-    result->current_file_size = item->size;
     result->current_file_bytes_processed = 0;
-    result->current_file_index = copied_file_count(result) + 1u;
     show_progress(result, partition, item->relative_path, "COPYING", 0);
+    *failure_operation = "source_open";
     source_fd = fileXioOpen(source, FIO_O_RDONLY, 0);
     if (source_fd < 0) {
         return_value = source_fd;
         goto failed;
     }
+    *failure_operation = "destination_open";
     destination_fd = fileXioOpen(destination,
                                  FIO_O_WRONLY | FIO_O_CREAT | FIO_O_TRUNC,
                                  0666);
@@ -714,12 +740,14 @@ static int copy_file(installer_result_t *result,
     }
     sha256_init(&source_hash);
     for (;;) {
-        int read_result = fileXioRead(source_fd, copy_buffer,
-                                     sizeof(copy_buffer));
+        int read_result = fileXioRead(
+            source_fd, copy_buffer,
+            source_media_read_size(sizeof(copy_buffer)));
         int written = 0;
 
         if (read_result < 0) {
             return_value = read_result;
+            *failure_operation = "source_read";
             goto failed;
         }
         if (read_result == 0)
@@ -733,49 +761,52 @@ static int copy_file(installer_result_t *result,
 
             if (write_result <= 0) {
                 return_value = write_result < 0 ? write_result : -EIO;
+                *failure_operation = "destination_write";
+                *failure_offset = source_size - (u64)read_result +
+                                  (u64)written;
                 goto failed;
             }
             written += write_result;
         }
         result->current_file_bytes_processed = source_size;
+        *failure_offset = source_size;
         if (source_size >= next_update) {
             show_progress(result, partition, item->relative_path,
                           "COPYING", source_size);
             next_update = source_size + 1048576u;
         }
     }
+    *failure_operation = "source_close";
     return_value = fileXioClose(source_fd);
     source_fd = -1;
     if (return_value < 0)
         goto failed;
+    *failure_operation = "destination_close";
     return_value = fileXioClose(destination_fd);
     destination_fd = -1;
     if (return_value < 0)
         goto failed;
     sha256_final(&source_hash, source_digest);
-    ++partition->copied_files;
-    partition->copied_bytes += source_size;
 
     if (source_size != item->size) {
         return_value = -EIO;
+        *failure_operation = "source_size_mismatch";
         goto failed;
     }
     show_progress(result, partition, item->relative_path,
                   "VERIFYING", 0);
     return_value = hash_open_file(destination, &destination_size,
                                   destination_digest, result, partition,
-                                  item);
+                                  item, failure_offset,
+                                  failure_operation);
     if (return_value < 0)
         goto failed;
     if (source_size != destination_size ||
         memcmp(source_digest, destination_digest, SHA256_DIGEST_SIZE) != 0) {
         return_value = -EIO;
+        *failure_operation = "destination_verify_mismatch";
         goto failed;
     }
-    ++partition->verified_files;
-    show_progress(result, partition, item->relative_path,
-                  "VERIFIED", source_size);
-    result->total_completed_file_bytes += source_size;
     return 0;
 
 failed:
@@ -783,9 +814,46 @@ failed:
         fileXioClose(source_fd);
     if (destination_fd >= 0)
         fileXioClose(destination_fd);
-    set_failure(result, return_value, partition->name, item->relative_path,
-                "copy_or_verify_file");
     return return_value;
+}
+
+static int copy_file(installer_result_t *result,
+                     installer_partition_result_t *partition,
+                     const installer_source_item_t *item)
+{
+    const char *failure_operation = "copy_file_unknown";
+    u64 failure_offset = 0;
+    unsigned int attempt;
+    int return_value = -EIO;
+
+    result->current_file_size = item->size;
+    result->current_file_index = copied_file_count(result) + 1u;
+    for (attempt = 1; attempt <= FILE_IO_MAX_ATTEMPTS; ++attempt) {
+        result->current_file_attempt = attempt;
+        return_value = copy_file_once(result, partition, item,
+                                      &failure_offset,
+                                      &failure_operation);
+        if (return_value == 0)
+            break;
+        if (return_value != -EIO || attempt == FILE_IO_MAX_ATTEMPTS)
+            break;
+        ++result->copy_retry_count;
+        DelayThread(FILE_IO_RETRY_DELAY_US);
+    }
+    if (return_value < 0) {
+        result->failure_offset = failure_offset;
+        result->failure_attempt = attempt;
+        set_failure(result, return_value, partition->name,
+                    item->relative_path, failure_operation);
+        return return_value;
+    }
+    ++partition->copied_files;
+    partition->copied_bytes += item->size;
+    ++partition->verified_files;
+    show_progress(result, partition, item->relative_path,
+                  "VERIFIED", item->size);
+    result->total_completed_file_bytes += item->size;
+    return 0;
 }
 
 static int install_partition(installer_result_t *result,

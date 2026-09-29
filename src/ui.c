@@ -17,6 +17,7 @@
 #define UI_LINE_HEIGHT 12
 #define UI_FORMAT_BUFFER_SIZE 2048
 #define UI_GLYPH_QWORDS 16
+#define UI_TRIANGLE_GLYPH 0x1eu
 #define UI_WHITE 0x00FFFFFFu
 #define UI_BLACK 0x00000000u
 
@@ -65,10 +66,16 @@ static int is_dense_character(unsigned char character)
 
 static u8 render_row(unsigned char character, int row)
 {
+    static const u8 triangle[UI_GLYPH_HEIGHT] = {
+        0x18u, 0x24u, 0x24u, 0x42u,
+        0x42u, 0x81u, 0xffu, 0x00u,
+    };
     const u8 *glyph =
         (const u8 *)&gfxPrimitivesFontdata[(unsigned int)character * 8u];
     u8 bits = glyph[row];
 
+    if (character == UI_TRIANGLE_GLYPH)
+        return triangle[row];
     if (is_dense_character(character))
         return bits;
     return (u8)(bits | (bits >> 1));
@@ -214,6 +221,42 @@ void ui_inverse_status(const char *text)
                        (unsigned char)*text++);
         text_x += UI_ADVANCE;
     }
+    next_line();
+}
+
+static void draw_inverse_centered(const char *text, int start, int width)
+{
+    int text_width = (int)strlen(text) * UI_ADVANCE;
+    int x = start + (width - text_width) / 2;
+    int limit = start + width;
+
+    if (x < start)
+        x = start;
+    while (*text != '\0' &&
+           x + UI_GLYPH_WIDTH <= limit &&
+           x + UI_GLYPH_WIDTH <= UI_FRAME_WIDTH - UI_SAFE_RIGHT) {
+        draw_character(x, cursor_y, UI_WHITE, UI_BLACK,
+                       (unsigned char)*text++);
+        x += UI_ADVANCE;
+    }
+}
+
+void ui_inverse_selector(const char *left, const char *center,
+                         const char *right)
+{
+    int panel_x;
+    int width = UI_FRAME_WIDTH - UI_SAFE_LEFT - UI_SAFE_RIGHT;
+    int first = width / 3;
+    int second = width / 3;
+
+    for (panel_x = UI_SAFE_LEFT;
+         panel_x + UI_GLYPH_WIDTH <= UI_FRAME_WIDTH - UI_SAFE_RIGHT;
+         panel_x += UI_GLYPH_WIDTH)
+        draw_character(panel_x, cursor_y, UI_WHITE, UI_BLACK, ' ');
+    draw_inverse_centered(left, UI_SAFE_LEFT, first);
+    draw_inverse_centered(center, UI_SAFE_LEFT + first, second);
+    draw_inverse_centered(right, UI_SAFE_LEFT + first + second,
+                          width - first - second);
     next_line();
 }
 

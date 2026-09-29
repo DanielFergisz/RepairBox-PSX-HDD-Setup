@@ -14,6 +14,7 @@
 #include <string.h>
 
 #include "storage.h"
+#include "source_media.h"
 
 extern unsigned char iomanX_irx[] __attribute__((aligned(16)));
 extern unsigned int size_iomanX_irx;
@@ -31,10 +32,6 @@ extern unsigned char dvrdrv_irx[] __attribute__((aligned(16)));
 extern unsigned int size_dvrdrv_irx;
 extern unsigned char dvrfile_irx[] __attribute__((aligned(16)));
 extern unsigned int size_dvrfile_irx;
-extern unsigned char usbd_irx[] __attribute__((aligned(16)));
-extern unsigned int size_usbd_irx;
-extern unsigned char usbhdfsd_irx[] __attribute__((aligned(16)));
-extern unsigned int size_usbhdfsd_irx;
 extern unsigned char extflash_irx[] __attribute__((aligned(16)));
 extern unsigned int size_extflash_irx;
 extern unsigned char xfromman_irx[] __attribute__((aligned(16)));
@@ -91,8 +88,8 @@ static const embedded_module_t embedded_modules[STORAGE_MODULE_COUNT] = {
      sizeof(ps2fs_arguments), ps2fs_arguments},
     {"dvrdrv", dvrdrv_irx, &size_dvrdrv_irx, 0, NULL},
     {"dvrfile", dvrfile_irx, &size_dvrfile_irx, 0, NULL},
-    {"usbd", usbd_irx, &size_usbd_irx, 0, NULL},
-    {"usbhdfsd", usbhdfsd_irx, &size_usbhdfsd_irx, 0, NULL},
+    {"source-profile", NULL, NULL, 0, NULL},
+    {"source-profile", NULL, NULL, 0, NULL},
     {"extflash", extflash_irx, &size_extflash_irx, 0, NULL},
     {"xfromman", xfromman_irx, &size_xfromman_irx, 0, NULL},
     {"xfromserv", xfromserv_irx, &size_xfromserv_irx, 0, NULL},
@@ -127,6 +124,14 @@ static void load_embedded_module(storage_diagnostics_t *diagnostics,
 {
     const embedded_module_t *module = &embedded_modules[index];
     int module_result = 0x7fffffff;
+    int reused_id = source_media_reuse_io_module(module->name);
+
+    if (reused_id >= 0) {
+        diagnostics->modules[index].name = module->name;
+        diagnostics->modules[index].module_id = reused_id;
+        diagnostics->modules[index].module_result = 0;
+        return;
+    }
 
     diagnostics->modules[index].name = module->name;
     diagnostics->modules[index].module_id =
@@ -178,14 +183,38 @@ void storage_initialize(storage_diagnostics_t *diagnostics)
         timer_delta_ms(dvrfile_start, dvrfile_end);
 
     diagnostics->filexio_init_result = fileXioInit();
-    load_embedded_module(diagnostics, MODULE_USBD);
-    load_embedded_module(diagnostics, MODULE_USBHDFSD);
+    /* Removable-media drivers are loaded exclusively by source_media.c.
+     * Keeping these two diagnostic slots successful preserves the fixed
+     * HDD/XFROM module map without linking the other build's driver stack. */
+    diagnostics->modules[MODULE_USBD].name = "source-profile";
+    diagnostics->modules[MODULE_USBD].module_id = 0;
+    diagnostics->modules[MODULE_USBD].module_result = 0;
+    diagnostics->modules[MODULE_USBHDFSD].name = "source-profile";
+    diagnostics->modules[MODULE_USBHDFSD].module_id = 0;
+    diagnostics->modules[MODULE_USBHDFSD].module_result = 0;
+}
+
+void storage_initialize_xfrom(storage_diagnostics_t *diagnostics)
+{
     load_embedded_module(diagnostics, MODULE_EXTFLASH);
     load_embedded_module(diagnostics, MODULE_XFROMMAN);
     load_embedded_module(diagnostics, MODULE_XFROMSERV);
     if (diagnostics->modules[MODULE_XFROMSERV].module_id >= 0 &&
         diagnostics->modules[MODULE_XFROMSERV].module_result == 0)
         diagnostics->xfrom_init_result = xfromInit(MC_TYPE_MC);
+}
+
+void storage_initialize_xfrom_only(storage_diagnostics_t *diagnostics)
+{
+    memset(diagnostics, 0, sizeof(*diagnostics));
+    diagnostics->xfrom_init_result = -ENODEV;
+    SifInitRpc(0);
+    diagnostics->lmb_patch_result = sbv_patch_enable_lmb();
+    diagnostics->prefix_patch_result = sbv_patch_disable_prefix_check();
+    if (diagnostics->lmb_patch_result < 0 ||
+        diagnostics->prefix_patch_result < 0)
+        return;
+    storage_initialize_xfrom(diagnostics);
 }
 
 static int append_entry(storage_device_result_t *device,

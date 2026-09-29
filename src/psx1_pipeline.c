@@ -1,4 +1,5 @@
 #include <delaythread.h>
+#include <errno.h>
 #include <kernel.h>
 #include <stdio.h>
 #include <string.h>
@@ -6,14 +7,27 @@
 
 #define NEWLIB_PORT_AWARE
 #include <fileXio_rpc.h>
+#include <hdd-ioctl.h>
 
 #include "psx1_pipeline.h"
+#include "build_profile.h"
 #include "ui.h"
 
 #define PSX1_STAGE_COUNT 8u
+#define APA_HEADER_FIRST_LBA 0x00002000u
+#define APA_HEADER_LBA_STEP 0x00040000u
+#define APA_HEADER_SECTORS 2u
+#define APA_HEADER_BYTES (APA_HEADER_SECTORS * 512u)
+#define APA_POST_FORMAT_SCAN_LIMIT 4u
+#define APA_POST_FORMAT_RETRY_US 500000u
 
 static const int pfs_format_args[1] = {8192};
 static unsigned char format_thread_stack[64 * 1024]
+    __attribute__((aligned(64)));
+static unsigned char recovery_transfer_buffer[sizeof(hddAtaTransfer_t) +
+                                              APA_HEADER_BYTES]
+    __attribute__((aligned(64)));
+static unsigned char recovery_readback_buffer[APA_HEADER_BYTES]
     __attribute__((aligned(64)));
 
 typedef enum format_job_kind {
@@ -30,6 +44,14 @@ typedef struct format_job {
     u64 start_ticks;
     u64 end_ticks;
 } format_job_t;
+
+typedef struct operation_screen_state {
+    unsigned int step;
+    int ready;
+    char operation[64];
+} operation_screen_state_t;
+
+static operation_screen_state_t operation_screen;
 
 _Static_assert(sizeof(pfs_format_args) == 4,
                "PFS formatter requires one 32-bit zone-size argument");
@@ -59,16 +81,37 @@ static void draw_operation(unsigned int step, const char *phase,
                            const char *operation, const char *status,
                            u32 duration_ms)
 {
-    ui_begin();
-    ui_printf("RepairBox.pl PSX HDD Setup v1.0\n");
-    ui_printf("PSX1 - First Revision\n\n");
+    char line[96];
+    int changed = !operation_screen.ready || operation_screen.step != step ||
+                  strcmp(operation_screen.operation, operation) != 0;
+
+    if (changed) {
+        ui_begin();
+        ui_printf(RBX_PROGRAM_TITLE "\n");
+        ui_printf("PSX1 - First Revision\n\n");
+        operation_screen.ready = 1;
+        operation_screen.step = step;
+        snprintf(operation_screen.operation,
+                 sizeof(operation_screen.operation), "%s", operation);
+    }
+    ui_set_position(UI_SAFE_LEFT, 52);
     ui_inverse_status(phase);
-    ui_printf("Step %u / %u\n%s\n\n", step, PSX1_STAGE_COUNT,
-              operation);
+    snprintf(line, sizeof(line), "Step %u / %u", step, PSX1_STAGE_COUNT);
+    ui_set_position(UI_SAFE_LEFT, 76);
+    ui_printf("%-54.54s", line);
+    ui_set_position(UI_SAFE_LEFT, 100);
+    ui_printf("%-54.54s", operation);
+    ui_set_position(UI_SAFE_LEFT, 132);
     ui_inverse_status(status);
-    if (duration_ms != 0)
-        ui_printf("Elapsed %u.%03u s\n", duration_ms / 1000u,
-                  duration_ms % 1000u);
+    if (duration_ms != 0) {
+        snprintf(line, sizeof(line), "Elapsed %u.%03u s",
+                 duration_ms / 1000u, duration_ms % 1000u);
+        ui_set_position(UI_SAFE_LEFT, 156);
+        ui_printf("%-54.54s", line);
+    } else {
+        ui_set_position(UI_SAFE_LEFT, 156);
+        ui_printf("%-54.54s", "");
+    }
     ui_sync();
 }
 
@@ -157,6 +200,128 @@ static const apa_entry_t *find_entry(const inspector_data_t *scan,
     return NULL;
 }
 
+static int validate_apa_after_format(psx1_result_t *result)
+{
+    unsigned int attempt;
+
+    result->format.post_format_flush_result = 0;
+    result->format.post_format_scan_attempts = 0;
+    for (attempt = 0; attempt < APA_POST_FORMAT_SCAN_LIMIT; ++attempt) {
+        reset_scan(&result->formatted);
+        inspector_scan_layout(&result->formatted);
+        ++result->format.post_format_scan_attempts;
+        result->format.apa_layout_valid =
+            format_test_exact_apa(&result->formatted);
+        result->format.mbr_valid =
+            format_test_mbr_valid(&result->formatted);
+        if (result->format.apa_layout_valid && result->format.mbr_valid)
+            return 1;
+        if (attempt + 1u < APA_POST_FORMAT_SCAN_LIMIT) {
+            result->format.post_format_flush_result =
+                fileXioDevctl("hdd0:", HDIOC_FLUSH, NULL, 0, NULL, 0);
+            DelayThread(APA_POST_FORMAT_RETRY_US);
+        }
+    }
+    return 0;
+}
+
+static void draw_recovery_cleanup(const format_test_result_t *format,
+                                  u32 current_lba, int *screen_ready)
+{
+    char line[96];
+
+    if (!*screen_ready) {
+        ui_begin();
+        ui_printf(RBX_PROGRAM_TITLE "\n");
+        ui_printf("PSX1 - First Revision\n\n");
+        *screen_ready = 1;
+    }
+    ui_set_position(UI_SAFE_LEFT, 52);
+    ui_inverse_status("APA RECOVERY CLEANUP");
+    ui_set_position(UI_SAFE_LEFT, 76);
+    ui_printf("%-54.54s", "Invalidating old APA header slots");
+    snprintf(line, sizeof(line), "Slot %u / %u   LBA 0x%08X",
+             format->recovery_cleanup_verified_slots,
+             format->recovery_cleanup_slots, current_lba);
+    ui_set_position(UI_SAFE_LEFT, 100);
+    ui_printf("%-54.54s", line);
+    ui_set_position(UI_SAFE_LEFT, 132);
+    ui_inverse_status("IN PROGRESS - DO NOT POWER OFF");
+    ui_sync();
+}
+
+static int cleanup_old_apa_headers(psx1_result_t *result)
+{
+    format_test_result_t *format = &result->format;
+    u64 sector_count = format->physical_sector_count;
+    u64 lba;
+    u64 start = GetTimerSystemTime();
+    int progress_screen_ready = 0;
+
+    format->recovery_cleanup_attempted = 1;
+    format->recovery_cleanup_result = -EIO;
+    format->recovery_cleanup_failure_lba = 0;
+    format->recovery_cleanup_slots = 0;
+    format->recovery_cleanup_verified_slots = 0;
+    if (sector_count > 0x100000000ULL)
+        sector_count = 0x100000000ULL;
+    if (sector_count <= APA_HEADER_FIRST_LBA + APA_HEADER_SECTORS) {
+        format->recovery_cleanup_result = -EINVAL;
+        format->recovery_cleanup_duration_ms =
+            elapsed_ms(start, GetTimerSystemTime());
+        return -EINVAL;
+    }
+    format->recovery_cleanup_slots = (u32)(
+        (sector_count - APA_HEADER_FIRST_LBA - APA_HEADER_SECTORS) /
+        APA_HEADER_LBA_STEP + 1u);
+    memset(recovery_transfer_buffer, 0, sizeof(recovery_transfer_buffer));
+    for (lba = APA_HEADER_FIRST_LBA;
+         lba + APA_HEADER_SECTORS <= sector_count;
+         lba += APA_HEADER_LBA_STEP) {
+        hddAtaTransfer_t *transfer =
+            (hddAtaTransfer_t *)recovery_transfer_buffer;
+        hddAtaTransfer_t request;
+        int io_result;
+
+        if ((format->recovery_cleanup_verified_slots & 15u) == 0)
+            draw_recovery_cleanup(format, (u32)lba,
+                                  &progress_screen_ready);
+        transfer->lba = (u32)lba;
+        transfer->size = APA_HEADER_SECTORS;
+        io_result = fileXioDevctl(
+            "hdd0:", HDIOC_WRITESECTOR, transfer,
+            sizeof(*transfer) + APA_HEADER_BYTES, NULL, 0);
+        if (io_result < 0) {
+            format->recovery_cleanup_failure_lba = (u32)lba;
+            format->recovery_cleanup_result = io_result;
+            goto finished;
+        }
+        request.lba = (u32)lba;
+        request.size = APA_HEADER_SECTORS;
+        memset(recovery_readback_buffer, 0xA5,
+               sizeof(recovery_readback_buffer));
+        io_result = fileXioDevctl(
+            "hdd0:", HDIOC_READSECTOR, &request, sizeof(request),
+            recovery_readback_buffer, sizeof(recovery_readback_buffer));
+        if (io_result < 0 ||
+            memcmp(transfer->data, recovery_readback_buffer,
+                   APA_HEADER_BYTES) != 0) {
+            format->recovery_cleanup_failure_lba = (u32)lba;
+            format->recovery_cleanup_result =
+                io_result < 0 ? io_result : -EIO;
+            goto finished;
+        }
+        ++format->recovery_cleanup_verified_slots;
+    }
+    format->recovery_cleanup_result =
+        fileXioDevctl("hdd0:", HDIOC_FLUSH, NULL, 0, NULL, 0);
+
+finished:
+    format->recovery_cleanup_duration_ms =
+        elapsed_ms(start, GetTimerSystemTime());
+    return format->recovery_cleanup_result;
+}
+
 static int installed_pfs_valid(const apa_entry_t *entry)
 {
     const raw_pfs_diag_t *pfs = &entry->raw_pfs;
@@ -225,7 +390,7 @@ void psx1_rescan_package(psx1_result_t *result)
                               result->package_ready;
 }
 
-void psx1_execute(psx1_result_t *result)
+static void psx1_execute_internal(psx1_result_t *result, int recovery_mode)
 {
     u64 total_start = GetTimerSystemTime();
     u64 start;
@@ -237,6 +402,13 @@ void psx1_execute(psx1_result_t *result)
     result->format.session_write_locked = 1;
     result->installer.confirmation_received = 1;
 
+    if (recovery_mode) {
+        if (cleanup_old_apa_headers(result) < 0) {
+            fail(result, 1, result->format.recovery_cleanup_result);
+            goto stopped;
+        }
+    }
+
     result->format.apa.attempted = 1;
     result->format.apa.return_value =
         run_format_job(1, "FAST APA FORMAT", FORMAT_JOB_APA, NULL,
@@ -245,12 +417,8 @@ void psx1_execute(psx1_result_t *result)
         fail(result, 1, result->format.apa.return_value);
         goto stopped;
     }
-    reset_scan(&result->formatted);
-    inspector_scan_layout(&result->formatted);
-    result->format.apa_layout_valid =
-        format_test_exact_apa(&result->formatted);
-    result->format.mbr_valid = format_test_mbr_valid(&result->formatted);
-    if (!result->format.apa_layout_valid || !result->format.mbr_valid) {
+    if (!validate_apa_after_format(result)) {
+        result->format.recovery_available = !recovery_mode;
         fail(result, 1, -1);
         goto stopped;
     }
@@ -343,6 +511,57 @@ stopped:
                        "COMPLETE", result->format.total_operation_duration_ms);
         DelayThread(750000);
     }
+}
+
+void psx1_execute(psx1_result_t *result)
+{
+    result->format.recovery_available = 0;
+    psx1_execute_internal(result, 0);
+}
+
+int psx1_recovery_available(const psx1_result_t *result)
+{
+    return result->format.recovery_available &&
+           result->format.apa.attempted &&
+           result->format.apa.return_value >= 0 &&
+           result->format.failed_step == 1;
+}
+
+void psx1_execute_recovery(psx1_result_t *result)
+{
+    unsigned int index;
+
+    if (!psx1_recovery_available(result))
+        return;
+    result->format.recovery_confirmed = 1;
+    result->format.recovery_available = 0;
+    result->format.stopped_on_error = 0;
+    result->format.failed_step = 0;
+    result->format.failed_result = 0;
+    result->format.storage_activity_stopped = 0;
+    result->format.apa.attempted = 0;
+    result->format.apa.return_value = 0;
+    result->format.apa.duration_ms = 0;
+    result->format.apa_layout_valid = 0;
+    result->format.mbr_valid = 0;
+    result->format.raw_validation_return = 0;
+    result->format.raw_validation_duration_ms = 0;
+    result->format.raw_pfs_discovery_valid = 0;
+    result->format.psx1_format_test_valid = 0;
+    for (index = 0; index < FORMAT_TEST_PFS_COUNT; ++index) {
+        result->format.pfs[index].attempted = 0;
+        result->format.pfs[index].return_value = 0;
+        result->format.pfs[index].duration_ms = 0;
+        result->format.pfs[index].raw_valid = 0;
+    }
+    result->all_package_files_valid = 0;
+    result->final_apa_valid = 0;
+    result->final_mbr_valid = 0;
+    result->final_raw_pfs_valid = 0;
+    result->psx1_storage_valid = 0;
+    result->psx1_installation_valid = 0;
+    memset(result->final_pfs_valid, 0, sizeof(result->final_pfs_valid));
+    psx1_execute_internal(result, 1);
 }
 
 void psx1_release(psx1_result_t *result)

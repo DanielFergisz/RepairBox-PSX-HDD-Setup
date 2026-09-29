@@ -1,1 +1,2 @@
-9d5c5535aade124a4f9d1afa1b63b4a192127e90f157e66c21f07a7c27bf043c  RepairBox.pl-PSX-HDD-Setup-v1.0.elf
+93d9d9fb818d240841124b387994912b966c3df236a12da997f04a3fc9771e5a  RepairBox.pl-PSX-HDD-and-Apps-Setup-v1.3-USB-MX4SIO.elf
+aef52e2cc961424c76ff4329eb1eed83b3f16e69fcf3cfa14930e2dcb163a51e  RepairBox.pl-PSX-HDD-and-Apps-Setup-v1.3-MMCE.elf

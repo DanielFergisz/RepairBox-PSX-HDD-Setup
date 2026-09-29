@@ -15,6 +15,7 @@
 #include "inspector.h"
 #include "pfs_raw_public.h"
 #include "sha256.h"
+#include "source_media.h"
 
 static int is_system_pfs_name(const char *name)
 {
@@ -94,10 +95,6 @@ extern unsigned char ps2hdd_psx1_irx[] __attribute__((aligned(16)));
 extern unsigned int size_ps2hdd_psx1_irx;
 extern unsigned char ps2fs_irx[] __attribute__((aligned(16)));
 extern unsigned int size_ps2fs_irx;
-extern unsigned char usbd_irx[] __attribute__((aligned(16)));
-extern unsigned int size_usbd_irx;
-extern unsigned char usbhdfsd_irx[] __attribute__((aligned(16)));
-extern unsigned int size_usbhdfsd_irx;
 
 typedef struct embedded_module {
     const char *name;
@@ -153,8 +150,8 @@ static const embedded_module_t modules[INSPECTOR_MODULE_COUNT] = {
      sizeof(hdd_arguments), hdd_arguments},
     {"ps2fs", ps2fs_irx, &size_ps2fs_irx,
      sizeof(pfs_arguments), pfs_arguments},
-    {"usbd", usbd_irx, &size_usbd_irx, 0, NULL},
-    {"usbhdfsd", usbhdfsd_irx, &size_usbhdfsd_irx, 0, NULL},
+    {"source-profile", NULL, NULL, 0, NULL},
+    {"source-profile", NULL, NULL, 0, NULL},
 };
 
 static unsigned char sector_buffer[APA_HEADER_BYTES] __attribute__((aligned(64)));
@@ -163,6 +160,14 @@ static void load_module(inspector_data_t *data, unsigned int index)
 {
     int result = 0x7fffffff;
     const embedded_module_t *module = &modules[index];
+    int reused_id = source_media_reuse_io_module(module->name);
+
+    if (reused_id >= 0) {
+        data->modules[index].name = module->name;
+        data->modules[index].module_id = reused_id;
+        data->modules[index].startup_result = 0;
+        return;
+    }
 
     data->modules[index].name = module->name;
     data->modules[index].module_id =
@@ -715,8 +720,13 @@ void inspector_initialize(inspector_data_t *data)
     SifInitRpc(0);
     data->lmb_patch_result = sbv_patch_enable_lmb();
     data->prefix_patch_result = sbv_patch_disable_prefix_check();
-    for (index = 0; index < INSPECTOR_MODULE_COUNT; ++index)
+    for (index = 0; index < 6u; ++index)
         load_module(data, index);
+    for (index = 6u; index < INSPECTOR_MODULE_COUNT; ++index) {
+        data->modules[index].name = "source-profile";
+        data->modules[index].module_id = 0;
+        data->modules[index].startup_result = 0;
+    }
     data->filexio_init_result = fileXioInit();
     data->cdvd_init_result = sceCdInit(SCECdINoD);
     data->cdvd_disk_type = sceCdGetDiskType();

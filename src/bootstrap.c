@@ -87,7 +87,8 @@ void bootstrap_validate_usb(bootstrap_result_t *result)
     if (fd < 0)
         return;
     for (;;) {
-        int read_result = fileXioRead(fd, file_buffer, sizeof(file_buffer));
+        int read_result = fileXioRead(
+            fd, file_buffer, source_media_read_size(sizeof(file_buffer)));
 
         result->binary_final_read_result = read_result;
         if (read_result <= 0)

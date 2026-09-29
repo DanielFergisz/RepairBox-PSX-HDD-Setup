@@ -75,6 +75,7 @@ static int image_valid(const activation_file_t *file)
            file->extra_read_result == 0 && file->close_result >= 0 &&
            file->inspection.sha1_valid && file->inspection.payload_valid &&
            !file->inspection.conflicting_value &&
+           file->inspection.unknown_key_count == 0 &&
            file->inspection.state != BOOTFLAG_STATE_INVALID;
 }
 
@@ -111,10 +112,13 @@ void activation_prepare(activation_result_t *result)
 {
     u64 start = GetTimerSystemTime();
 
+    result->current_accessible =
+        result->original.open_result >= 0 &&
+        result->original.read_result >= 0 &&
+        result->original.close_result >= 0;
     result->current_valid = image_valid(&result->original);
-    if (!result->current_valid)
-        return;
-    if (result->original.inspection.state == BOOTFLAG_STATE_PENDING_40GB) {
+    if (result->current_valid &&
+        result->original.inspection.state == BOOTFLAG_STATE_PENDING_40GB) {
         result->already_armed =
             memcmp(result->original.sha1, bootflag_expected_sha1,
                    BOOTFLAG_DIGEST_SIZE) == 0 &&
@@ -123,8 +127,9 @@ void activation_prepare(activation_result_t *result)
             elapsed_ms(start, GetTimerSystemTime());
         return;
     }
-    if (result->original.inspection.state != BOOTFLAG_STATE_NORMAL)
-        return;
+    result->replacement_required =
+        !result->current_valid ||
+        result->original.inspection.state != BOOTFLAG_STATE_PENDING_40GB;
     if (bootflag_generate_standard_40gb(&result->generated) == 0) {
         bootflag_inspect_image(result->generated.bytes, BOOTFLAG_SIZE,
                                &result->generated_inspection);
@@ -150,7 +155,7 @@ int activation_arm_pending(activation_result_t *result,
 
     if (!storage_valid || !session_confirmed ||
         !result->generation_valid ||
-        result->original.inspection.state != BOOTFLAG_STATE_NORMAL)
+        result->already_armed)
         return -EPERM;
     result->write_attempted = 1;
     start = GetTimerSystemTime();

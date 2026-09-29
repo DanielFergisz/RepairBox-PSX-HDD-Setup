@@ -167,7 +167,8 @@ static void inspect_image(const u8 bytes[BOOTFLAG_RO_SIZE],
         offset = end + 1u;
     }
     if (!result->payload_valid || !result->sha1_valid ||
-        result->conflicting_value || bootmode_count != 1)
+        result->conflicting_value || bootmode_count != 1 ||
+        result->unknown_key_count != 0)
         return;
     if (repartition_count == 0 && contents_count == 0)
         result->state = BOOTFLAG_RO_NORMAL;
