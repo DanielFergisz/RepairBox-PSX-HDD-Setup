@@ -33,6 +33,8 @@ void psx1_prepare(psx1_result_t *result);
 const char *psx1_capacity_name(media_capacity_class_t capacity);
 void psx1_rescan_package(psx1_result_t *result);
 void psx1_execute(psx1_result_t *result);
+int psx1_recovery_available(const psx1_result_t *result);
+void psx1_execute_recovery(psx1_result_t *result);
 void psx1_release(psx1_result_t *result);
 
 #endif

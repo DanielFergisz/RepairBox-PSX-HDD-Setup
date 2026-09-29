@@ -56,6 +56,16 @@ typedef struct {
     int failed_step;
     int failed_result;
     format_stage_t apa;
+    int post_format_flush_result;
+    u32 post_format_scan_attempts;
+    int recovery_available;
+    int recovery_confirmed;
+    int recovery_cleanup_attempted;
+    int recovery_cleanup_result;
+    u32 recovery_cleanup_duration_ms;
+    u32 recovery_cleanup_slots;
+    u32 recovery_cleanup_verified_slots;
+    u32 recovery_cleanup_failure_lba;
     format_stage_t pfs[FORMAT_TEST_PFS_COUNT];
     int apa_layout_valid;
     int mbr_valid;

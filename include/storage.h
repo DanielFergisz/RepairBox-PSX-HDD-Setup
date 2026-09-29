@@ -53,6 +53,8 @@ typedef struct storage_diagnostics {
 } storage_diagnostics_t;
 
 void storage_initialize(storage_diagnostics_t *diagnostics);
+void storage_initialize_xfrom_only(storage_diagnostics_t *diagnostics);
+void storage_initialize_xfrom(storage_diagnostics_t *diagnostics);
 void storage_refresh_layout_diagnostics(storage_diagnostics_t *diagnostics);
 void storage_release(storage_diagnostics_t *diagnostics);
 const char *storage_result_name(int result);

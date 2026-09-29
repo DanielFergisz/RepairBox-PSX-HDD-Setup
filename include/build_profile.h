@@ -1,0 +1,20 @@
+#ifndef REPAIRBOX_BUILD_PROFILE_H
+#define REPAIRBOX_BUILD_PROFILE_H
+
+#if !defined(RBX_BUILD_MMCE) || (RBX_BUILD_MMCE != 0 && RBX_BUILD_MMCE != 1)
+#error Select RBX_BUILD_MMCE=0 or 1 explicitly
+#endif
+
+#if RBX_BUILD_MMCE
+#define RBX_BUILD_LABEL "MMCE"
+#define RBX_FIRST_SOURCE_INDEX 2u
+#define RBX_LAST_SOURCE_INDEX 3u
+#else
+#define RBX_BUILD_LABEL "USB/MX4SIO"
+#define RBX_FIRST_SOURCE_INDEX 0u
+#define RBX_LAST_SOURCE_INDEX 1u
+#endif
+
+#define RBX_PROGRAM_TITLE "RepairBox.pl PSX HDD + Apps Setup v1.3 " RBX_BUILD_LABEL
+
+#endif

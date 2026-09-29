@@ -12,6 +12,8 @@ void ui_printf(const char *format, ...)
     __attribute__((format(printf, 1, 2)));
 void ui_set_position(int x, int y);
 void ui_inverse_status(const char *text);
+void ui_inverse_selector(const char *left, const char *center,
+                         const char *right);
 void ui_draw_repairbox_logo(int x, int y);
 void ui_sync(void);
 

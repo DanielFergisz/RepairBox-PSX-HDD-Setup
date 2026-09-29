@@ -3,9 +3,11 @@
 
 #include <tamtypes.h>
 
-#define BOOTSTRAP_ROOT "mass:/RepairBox-PSX2-Bootstrap"
-#define BOOTSTRAP_BIN_PATH BOOTSTRAP_ROOT "/mbr_bootstrap_prefix.bin"
-#define BOOTSTRAP_SUMS_PATH BOOTSTRAP_ROOT "/SHA256SUMS.txt"
+#include "source_media.h"
+
+#define BOOTSTRAP_ROOT source_media_bootstrap_root()
+#define BOOTSTRAP_BIN_PATH source_media_bootstrap_bin_path()
+#define BOOTSTRAP_SUMS_PATH source_media_bootstrap_sums_path()
 #define BOOTSTRAP_SECTOR_COUNT 0x27E7u
 #define BOOTSTRAP_BYTE_COUNT 0x004FCE00u
 #define BOOTSTRAP_SHA256_SIZE 32u

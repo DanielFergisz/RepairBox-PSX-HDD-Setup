@@ -73,6 +73,7 @@ typedef struct dr40_result {
     int stack_ready;
     int hardware_profile_valid;
     int visible_boundary_valid;
+    int bootflag_accessible;
     int bootflag_normal;
     int source_ready;
     int bootstrap_ready;

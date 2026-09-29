@@ -29,8 +29,10 @@ typedef struct activation_result {
     int write_close_result;
     int pending_valid;
     int sony_activation_armed;
+    int current_accessible;
     int current_valid;
     int already_armed;
+    int replacement_required;
     u32 preparation_duration_ms;
     u32 activation_duration_ms;
 } activation_result_t;

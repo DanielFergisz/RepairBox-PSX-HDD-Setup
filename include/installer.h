@@ -4,13 +4,14 @@
 #include <stddef.h>
 #include <tamtypes.h>
 
+#include "source_media.h"
 #include "storage.h"
 
 #define INSTALLER_PARTITION_COUNT 6
 #define INSTALLER_PSX1_PARTITION_COUNT 4
 #define INSTALLER_PATH_SIZE 1024
-#define INSTALLER_SOURCE_ROOT "mass:/RepairBox-PSX2-SystemFiles"
-#define INSTALLER_PSX1_SOURCE_ROOT "mass:/RepairBox-PSX1-SystemFiles"
+#define INSTALLER_SOURCE_ROOT source_media_psx2_system_root()
+#define INSTALLER_PSX1_SOURCE_ROOT source_media_psx1_system_root()
 
 typedef enum installer_item_type {
     INSTALLER_ITEM_DIRECTORY = 1,
@@ -70,6 +71,8 @@ typedef struct installer_result {
     u32 current_file_index;
     u64 current_file_size;
     u64 current_file_bytes_processed;
+    u32 current_file_attempt;
+    u32 copy_retry_count;
     u64 total_completed_file_bytes;
     u32 copy_elapsed_ms;
     u32 verify_duration_ms;
@@ -86,6 +89,8 @@ typedef struct installer_result {
     int all_unmounted_cleanly;
     int system_files_install_valid;
     int failure_return;
+    u64 failure_offset;
+    u32 failure_attempt;
     char failure_partition[32];
     char failure_path[INSTALLER_PATH_SIZE];
     char failure_operation[64];
